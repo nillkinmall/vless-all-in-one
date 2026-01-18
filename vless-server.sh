@@ -1476,8 +1476,7 @@ add_xray_inbound_v2() {
                     settings: {
                         auth: "password",
                         accounts: [{user: $username, pass: $password}],
-                        udp: true,
-                        ip: $listen_addr
+                        udp: true
                     },
                     streamSettings: {
                         network: "tcp",
@@ -1503,8 +1502,7 @@ add_xray_inbound_v2() {
                     settings: {
                         auth: "password",
                         accounts: [{user: $username, pass: $password}],
-                        udp: true,
-                        ip: $listen_addr
+                        udp: true
                     },
                     tag: $tag
                 }' > "$tmp_inbound"
