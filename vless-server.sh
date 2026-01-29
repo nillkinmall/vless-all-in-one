@@ -10758,17 +10758,23 @@ db_add_routing_rule() {
     local domains="$3"      # 自定义域名 (仅 custom 类型)
     
     [[ ! -f "$DB_FILE" ]] && echo '{}' > "$DB_FILE"
+
+    # 获取 IP 版本选项 (第4个参数)
+    local ip_version="${4:-prefer_ipv4}"
     
     # 生成规则 ID
     local rule_id="${rule_type}_$(date +%s)"
-    [[ "$rule_type" != "custom" ]] && rule_id="$rule_type"
+    if [[ "$rule_type" != "custom" ]]; then
+        if [[ "$rule_type" == "all" ]]; then
+            rule_id="all_${ip_version}"
+        else
+            rule_id="$rule_type"
+        fi
+    fi
     
     # 获取域名
     local rule_domains="$domains"
     [[ "$rule_type" != "custom" && "$rule_type" != "all" ]] && rule_domains="${ROUTING_PRESETS[$rule_type]:-}"
-    
-    # 获取 IP 版本选项 (第4个参数)
-    local ip_version="${4:-prefer_ipv4}"
     
     local tmp=$(mktemp)
     
@@ -10797,7 +10803,9 @@ db_add_routing_rule() {
     elif [[ "$rule_type" == "all" ]]; then
         # all 规则追加到末尾，优先级最低
         jq --arg id "$rule_id" --arg type "$rule_type" --arg out "$outbound" --arg domains "$rule_domains" --arg ip_ver "$ip_version" \
-            '.routing_rules = ((.routing_rules // []) | map(select(.type != $type))) + [{id: $id, type: $type, outbound: $out, domains: $domains, ip_version: $ip_ver}]' \
+            '.routing_rules = (
+                ((.routing_rules // []) | map(select(.type != $type or ((.ip_version // "prefer_ipv4") != $ip_ver))))
+            ) + [{id: $id, type: $type, outbound: $out, domains: $domains, ip_version: $ip_ver}]' \
             "$DB_FILE" > "$tmp" && mv "$tmp" "$DB_FILE"
     else
         # 预设规则：删除同类型旧规则
@@ -10854,6 +10862,16 @@ db_has_routing_rule() {
     [[ "$count" -gt 0 ]]
 }
 
+# 数据库：检查规则是否存在（按类型 + IP 版本）
+db_has_routing_rule_by_type_and_ip_version() {
+    local rule_type="$1"
+    local ip_version="$2"
+    [[ ! -f "$DB_FILE" ]] && return 1
+    local count=$(jq --arg type "$rule_type" --arg ip_ver "$ip_version" \
+        '[.routing_rules[]? | select(.type == $type and (.ip_version // "prefer_ipv4") == $ip_ver)] | length' \
+        "$DB_FILE" 2>/dev/null)
+    [[ "$count" -gt 0 ]]
+}
 # 数据库：清空所有分流规则
 db_clear_routing_rules() {
     [[ ! -f "$DB_FILE" ]] && return
@@ -11299,12 +11317,20 @@ gen_xray_routing_rules() {
     [[ -z "$rules" || "$rules" == "[]" ]] && return
     
     local result="[]"
+    local all_ipv6="[]"
+    local all_ipv4="[]"
+    local all_other="[]"
     while IFS= read -r rule; do
         [[ -z "$rule" ]] && continue
         local rule_type=$(echo "$rule" | jq -r '.type')
         local outbound=$(echo "$rule" | jq -r '.outbound')
         local domains=$(echo "$rule" | jq -r '.domains // ""')
         local ip_version=$(echo "$rule" | jq -r '.ip_version // "prefer_ipv4"')
+        local ip_family_cidr=""
+        case "$ip_version" in
+            ipv4_only) ip_family_cidr="0.0.0.0/0" ;;
+            ipv6_only) ip_family_cidr="::/0" ;;
+        esac
         
         # 转换出口标识为 tag
         local tag="$outbound"
@@ -11341,28 +11367,46 @@ gen_xray_routing_rules() {
         fi
         
         if [[ "$rule_type" == "all" ]]; then
-            result=$(echo "$result" | jq --arg tag "$tag" --arg key "$tag_key" \
-                '. + [{"type": "field", "network": "tcp,udp", ($key): $tag}]')
+            local rule_json=""
+            if [[ -n "$ip_family_cidr" ]]; then
+                rule_json=$(jq -n --arg tag "$tag" --arg key "$tag_key" --arg ip "$ip_family_cidr" \
+                    '{"type":"field","network":"tcp,udp","ip":[$ip],($key):$tag}')
+            else
+                rule_json=$(jq -n --arg tag "$tag" --arg key "$tag_key" \
+                    '{"type":"field","network":"tcp,udp",($key):$tag}')
+            fi
+            case "$ip_version" in
+                ipv6_only) all_ipv6=$(echo "$all_ipv6" | jq --argjson r "$rule_json" '. + [$r]') ;;
+                ipv4_only) all_ipv4=$(echo "$all_ipv4" | jq --argjson r "$rule_json" '. + [$r]') ;;
+                *) all_other=$(echo "$all_other" | jq --argjson r "$rule_json" '. + [$r]') ;;
+            esac
         elif [[ -n "$domains" ]]; then
             # 检测是否是 geosite 规则
             if [[ "$domains" == geosite:* ]]; then
                 # 添加 domain 规则
-                result=$(echo "$result" | jq --arg geosite "$domains" --arg tag "$tag" --arg key "$tag_key" \
-                    '. + [{"type": "field", "domain": [$geosite], ($key): $tag}]')
+                if [[ -n "$ip_family_cidr" ]]; then
+                    result=$(echo "$result" | jq --arg geosite "$domains" --arg tag "$tag" --arg key "$tag_key" --arg ip "$ip_family_cidr" \
+                        '. + [{"type": "field", "domain": [$geosite], "ip": [$ip], ($key): $tag}]')
+                else
+                    result=$(echo "$result" | jq --arg geosite "$domains" --arg tag "$tag" --arg key "$tag_key" \
+                        '. + [{"type": "field", "domain": [$geosite], ($key): $tag}]')
+                fi
                 
                 # 检查是否有对应的 geoip 规则需要添加（拆成独立规则，OR 关系）
                 local geoip_rule="${ROUTING_PRESETS_IP[$rule_type]:-}"
-                if [[ -n "$geoip_rule" ]]; then
+                if [[ -n "$geoip_rule" && -z "$ip_family_cidr" ]]; then
                     result=$(echo "$result" | jq --arg geoip "$geoip_rule" --arg tag "$tag" --arg key "$tag_key" \
                         '. + [{"type": "field", "ip": [$geoip], ($key): $tag}]')
                 fi
             elif [[ "$domains" =~ ^geoip:[^,]+(,geoip:[^,]+)*$ ]]; then
                 # geoip 规则支持多个条目
-                local geoip_array
-                geoip_array=$(echo "$domains" | tr ',' '\n' | grep -v '^$' | jq -R . 2>/dev/null | jq -s . 2>/dev/null)
-                if [[ -n "$geoip_array" && "$geoip_array" != "[]" && "$geoip_array" != "null" ]] && echo "$geoip_array" | jq empty 2>/dev/null; then
-                    result=$(echo "$result" | jq --argjson ips "$geoip_array" --arg tag "$tag" --arg key "$tag_key" \
-                        '. + [{"type": "field", "ip": $ips, ($key): $tag}]')
+                if [[ -z "$ip_family_cidr" ]]; then
+                    local geoip_array
+                    geoip_array=$(echo "$domains" | tr ',' '\n' | grep -v '^$' | jq -R . 2>/dev/null | jq -s . 2>/dev/null)
+                    if [[ -n "$geoip_array" && "$geoip_array" != "[]" && "$geoip_array" != "null" ]] && echo "$geoip_array" | jq empty 2>/dev/null; then
+                        result=$(echo "$result" | jq --argjson ips "$geoip_array" --arg tag "$tag" --arg key "$tag_key" \
+                            '. + [{"type": "field", "ip": $ips, ($key): $tag}]')
+                    fi
                 fi
             else
                 # 分离域名和 IP 地址
@@ -11372,6 +11416,12 @@ gen_xray_routing_rules() {
                     [[ -z "$item" ]] && continue
                     # 判断是否是 IP 地址 (IPv4/IPv6/CIDR)
                     if [[ "$item" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]] || [[ "$item" =~ ^[0-9a-fA-F:]+(/[0-9]+)?$ ]]; then
+                        if [[ "$ip_version" == "ipv4_only" && "$item" =~ : ]]; then
+                            continue
+                        fi
+                        if [[ "$ip_version" == "ipv6_only" && "$item" =~ \. ]]; then
+                            continue
+                        fi
                         [[ -n "$ip_list" ]] && ip_list+=","
                         ip_list+="$item"
                     else
@@ -11385,8 +11435,13 @@ gen_xray_routing_rules() {
                     local domain_array
                     domain_array=$(echo "$domain_list" | tr ',' '\n' | grep -v '^$' | sed 's/^/domain:/' | jq -R . 2>/dev/null | jq -s . 2>/dev/null)
                     if [[ -n "$domain_array" && "$domain_array" != "[]" && "$domain_array" != "null" ]] && echo "$domain_array" | jq empty 2>/dev/null; then
-                        result=$(echo "$result" | jq --argjson domains "$domain_array" --arg tag "$tag" --arg key "$tag_key" \
-                            '. + [{"type": "field", "domain": $domains, ($key): $tag}]')
+                        if [[ -n "$ip_family_cidr" ]]; then
+                            result=$(echo "$result" | jq --argjson domains "$domain_array" --arg tag "$tag" --arg key "$tag_key" --arg ip "$ip_family_cidr" \
+                                '. + [{"type": "field", "domain": $domains, "ip": [$ip], ($key): $tag}]')
+                        else
+                            result=$(echo "$result" | jq --argjson domains "$domain_array" --arg tag "$tag" --arg key "$tag_key" \
+                                '. + [{"type": "field", "domain": $domains, ($key): $tag}]')
+                        fi
                     fi
                 fi
                 
@@ -11403,6 +11458,7 @@ gen_xray_routing_rules() {
         fi
     done < <(echo "$rules" | jq -c '.[]')
     
+    result=$(echo "$result" | jq --argjson v6 "$all_ipv6" --argjson v4 "$all_ipv4" --argjson other "$all_other" '. + $v6 + $v4 + $other')
     [[ "$result" != "[]" ]] && echo "$result"
 }
 
@@ -11412,12 +11468,20 @@ gen_singbox_routing_rules() {
     [[ -z "$rules" || "$rules" == "[]" ]] && return
     
     local result="[]"
+    local all_ipv6="[]"
+    local all_ipv4="[]"
+    local all_other="[]"
     while IFS= read -r rule; do
         [[ -z "$rule" ]] && continue
         local rule_type=$(echo "$rule" | jq -r '.type')
         local outbound=$(echo "$rule" | jq -r '.outbound')
         local domains=$(echo "$rule" | jq -r '.domains // ""')
         local ip_version=$(echo "$rule" | jq -r '.ip_version // "prefer_ipv4"')
+        local ip_family_cidr=""
+        case "$ip_version" in
+            ipv4_only) ip_family_cidr="0.0.0.0/0" ;;
+            ipv6_only) ip_family_cidr="::/0" ;;
+        esac
         
         # 转换出口标识为 tag
         local tag="$outbound"
@@ -11449,21 +11513,43 @@ gen_singbox_routing_rules() {
         fi
         
         if [[ "$rule_type" == "all" ]]; then
-            result=$(echo "$result" | jq --arg tag "$tag" '. + [{"outbound": $tag}]')
+            local rule_json=""
+            if [[ -n "$ip_family_cidr" ]]; then
+                rule_json=$(jq -n --arg tag "$tag" --arg ip "$ip_family_cidr" \
+                    '{"ip_cidr":[$ip],"outbound":$tag}')
+            else
+                rule_json=$(jq -n --arg tag "$tag" \
+                    '{"outbound":$tag}')
+            fi
+            case "$ip_version" in
+                ipv6_only) all_ipv6=$(echo "$all_ipv6" | jq --argjson r "$rule_json" '. + [$r]') ;;
+                ipv4_only) all_ipv4=$(echo "$all_ipv4" | jq --argjson r "$rule_json" '. + [$r]') ;;
+                *) all_other=$(echo "$all_other" | jq --argjson r "$rule_json" '. + [$r]') ;;
+            esac
         elif [[ -n "$domains" ]]; then
             # 检测是否是 geosite 规则
             if [[ "$domains" == geosite:* ]]; then
                 # Sing-box 使用 rule_set 格式，需要引用 geosite 规则集
                 local geosite_name="${domains#geosite:}"
-                result=$(echo "$result" | jq --arg geosite "$geosite_name" --arg tag "$tag" \
-                    '. + [{"rule_set": ["geosite-\($geosite)"], "outbound": $tag}]')
+                if [[ -n "$ip_family_cidr" ]]; then
+                    result=$(echo "$result" | jq --arg geosite "$geosite_name" --arg tag "$tag" --arg ip "$ip_family_cidr" \
+                        '. + [{"rule_set": ["geosite-\($geosite)"], "ip_cidr": [$ip], "outbound": $tag}]')
+                else
+                    result=$(echo "$result" | jq --arg geosite "$geosite_name" --arg tag "$tag" \
+                        '. + [{"rule_set": ["geosite-\($geosite)"], "outbound": $tag}]')
+                fi
             elif [[ "$domains" =~ ^geoip:[^,]+(,geoip:[^,]+)*$ ]]; then
                 # geoip 规则转换为对应 rule_set
                 local geoip_rule_set
                 geoip_rule_set=$(echo "$domains" | tr ',' '\n' | grep -v '^$' | sed 's/^geoip:/geoip-/' | jq -R . 2>/dev/null | jq -s . 2>/dev/null)
                 if [[ -n "$geoip_rule_set" && "$geoip_rule_set" != "[]" && "$geoip_rule_set" != "null" ]] && echo "$geoip_rule_set" | jq empty 2>/dev/null; then
-                    result=$(echo "$result" | jq --argjson sets "$geoip_rule_set" --arg tag "$tag" \
-                        '. + [{"rule_set": $sets, "outbound": $tag}]')
+                    if [[ -n "$ip_family_cidr" ]]; then
+                        result=$(echo "$result" | jq --argjson sets "$geoip_rule_set" --arg tag "$tag" --arg ip "$ip_family_cidr" \
+                            '. + [{"rule_set": $sets, "ip_cidr": [$ip], "outbound": $tag}]')
+                    else
+                        result=$(echo "$result" | jq --argjson sets "$geoip_rule_set" --arg tag "$tag" \
+                            '. + [{"rule_set": $sets, "outbound": $tag}]')
+                    fi
                 fi
             else
                 # 分离域名和 IP 地址
@@ -11473,6 +11559,12 @@ gen_singbox_routing_rules() {
                     [[ -z "$item" ]] && continue
                     # 判断是否是 IP 地址 (IPv4/IPv6/CIDR)
                     if [[ "$item" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]] || [[ "$item" =~ ^[0-9a-fA-F:]+(/[0-9]+)?$ ]]; then
+                        if [[ "$ip_version" == "ipv4_only" && "$item" =~ : ]]; then
+                            continue
+                        fi
+                        if [[ "$ip_version" == "ipv6_only" && "$item" =~ \. ]]; then
+                            continue
+                        fi
                         [[ -n "$ip_list" ]] && ip_list+=","
                         ip_list+="$item"
                     else
@@ -11486,7 +11578,13 @@ gen_singbox_routing_rules() {
                     local domain_array
                     domain_array=$(echo "$domain_list" | tr ',' '\n' | grep -v '^$' | jq -R . 2>/dev/null | jq -s . 2>/dev/null)
                     if [[ -n "$domain_array" && "$domain_array" != "[]" && "$domain_array" != "null" ]] && echo "$domain_array" | jq empty 2>/dev/null; then
-                        result=$(echo "$result" | jq --argjson domains "$domain_array" --arg tag "$tag" '. + [{"domain_suffix": $domains, "outbound": $tag}]')
+                        if [[ -n "$ip_family_cidr" ]]; then
+                            result=$(echo "$result" | jq --argjson domains "$domain_array" --arg tag "$tag" --arg ip "$ip_family_cidr" \
+                                '. + [{"domain_suffix": $domains, "ip_cidr": [$ip], "outbound": $tag}]')
+                        else
+                            result=$(echo "$result" | jq --argjson domains "$domain_array" --arg tag "$tag" \
+                                '. + [{"domain_suffix": $domains, "outbound": $tag}]')
+                        fi
                     fi
                 fi
                 
@@ -11502,6 +11600,7 @@ gen_singbox_routing_rules() {
         fi
     done < <(echo "$rules" | jq -c '.[]')
     
+    result=$(echo "$result" | jq --argjson v6 "$all_ipv6" --argjson v4 "$all_ipv4" --argjson other "$all_other" '. + $v6 + $v4 + $other')
     [[ "$result" != "[]" ]] && echo "$result"
 }
 
@@ -11666,7 +11765,7 @@ show_routing_status() {
                 ipv6_only) ip_mark=" ${C}[仅IPv6]${NC}" ;;
                 prefer_ipv4) ip_mark=" ${C}[优先IPv4]${NC}" ;;
                 prefer_ipv6) ip_mark=" ${C}[优先IPv6]${NC}" ;;
-                as_is|asis) ip_mark=" ${C}[AsIs]${NC}" ;;
+                as_is|asis) ip_mark=" ${C}[ALL]${NC}" ;;
             esac
             
             if [[ "$rule_type" == "all" ]]; then
@@ -11888,13 +11987,6 @@ _add_routing_rule() {
         *) _warn "无效选项"; _pause; return ;;
     esac
     
-    # 检查规则是否已存在 (custom 类型允许多条，不检查)
-    if [[ "$rule_type" != "custom" ]] && db_has_routing_rule "$rule_type"; then
-        _warn "${ROUTING_PRESET_NAMES[$rule_type]:-$rule_type} 规则已存在"
-        read -rp "  是否覆盖? [y/N]: " overwrite
-        [[ ! "$overwrite" =~ ^[Yy]$ ]] && return
-    fi
-    
     # 广告屏蔽规则直接使用 block 出口，不需要选择
     if [[ "$rule_type" == "ads" ]]; then
         db_add_routing_rule "$rule_type" "block"
@@ -11912,27 +12004,46 @@ _add_routing_rule() {
     local outbound=$(_select_outbound "选择出口" "no_check")
     [[ -z "$outbound" ]] && return
     
-    # 选择出口 IP 版本（仅 direct 出口需要）
+    # 选择匹配的 IP 版本（用于 IPv4/IPv6 分流）
     local ip_version="as_is"  # 默认值
-    if [[ "$outbound" == "direct" ]]; then
-        echo ""
-        echo -e "  ${Y}出站方式:${NC}"
-        echo -e "  ${G}1)${NC} 仅 IPv4（IPv6 受限或不稳定环境）"
-        echo -e "  ${G}2)${NC} 仅 IPv6（解锁 Netflix，避免同户检测）"
-        echo -e "  ${G}3)${NC} 优先 IPv4（双栈环境，优先 IPv4）"
-        echo -e "  ${G}4)${NC} 优先 IPv6（双栈环境，优先 IPv6）"
-        echo -e "  ${G}5)${NC} AsIs（默认值，不做处理）"
-        read -rp "  请选择 [1-5，默认 5]: " ip_version_choice
-        
-        case "$ip_version_choice" in
-            1) ip_version="ipv4_only" ;;
-            2) ip_version="ipv6_only" ;;
-            3) ip_version="prefer_ipv4" ;;
-            4) ip_version="prefer_ipv6" ;;
-            5|"") ip_version="as_is" ;;
-        esac
-    fi
+    echo ""
+    echo -e "  ${Y}匹配的 IP 版本:${NC}"
+    echo -e "  ${G}1)${NC} 仅 IPv4（只匹配 IPv4 流量）"
+    echo -e "  ${G}2)${NC} 仅 IPv6（只匹配 IPv6 流量）"
+    echo -e "  ${G}3)${NC} ALL（不限制，匹配全部）"
+    read -rp "  请选择 [1-3，默认 3]: " ip_version_choice
     
+    case "$ip_version_choice" in
+        1) ip_version="ipv4_only" ;;
+        2) ip_version="ipv6_only" ;;
+        3|"") ip_version="as_is" ;;
+    esac
+    
+    # 检查规则是否已存在 (custom 类型允许多条，不检查)
+    if [[ "$rule_type" != "custom" ]]; then
+        if [[ "$rule_type" == "all" ]]; then
+            if db_has_routing_rule_by_type_and_ip_version "$rule_type" "$ip_version"; then
+                local ip_text=""
+                case "$ip_version" in
+                    ipv4_only) ip_text="仅IPv4" ;;
+                    ipv6_only) ip_text="仅IPv6" ;;
+                    prefer_ipv4) ip_text="优先IPv4" ;;
+                    prefer_ipv6) ip_text="优先IPv6" ;;
+                    as_is|asis) ip_text="ALL" ;;
+                esac
+                _warn "所有流量 规则(${ip_text})已存在"
+                read -rp "  是否覆盖? [y/N]: " overwrite
+                [[ ! "$overwrite" =~ ^[Yy]$ ]] && return
+            fi
+        else
+            if db_has_routing_rule "$rule_type"; then
+                _warn "${ROUTING_PRESET_NAMES[$rule_type]:-$rule_type} 规则已存在"
+                read -rp "  是否覆盖? [y/N]: " overwrite
+                [[ ! "$overwrite" =~ ^[Yy]$ ]] && return
+            fi
+        fi
+    fi
+
     # 保存规则
     if [[ "$rule_type" == "custom" ]]; then
         db_add_routing_rule "$rule_type" "$outbound" "$custom_domains" "$ip_version"
@@ -11945,17 +12056,15 @@ _add_routing_rule() {
     [[ "$rule_type" == "all" ]] && rule_name="所有流量"
     local outbound_name=$(_get_outbound_display_name "$outbound")
     
-    # 显示 IP 版本标记（仅 direct 出口）
+    # 显示 IP 版本标记
     local ip_version_mark=""
-    if [[ "$outbound" == "direct" ]]; then
-        case "$ip_version" in
-            ipv4_only) ip_version_mark=" ${C}[仅IPv4]${NC}" ;;
-            ipv6_only) ip_version_mark=" ${C}[仅IPv6]${NC}" ;;
-            prefer_ipv4) ip_version_mark=" ${C}[优先IPv4]${NC}" ;;
-            prefer_ipv6) ip_version_mark=" ${C}[优先IPv6]${NC}" ;;
-            as_is|asis) ip_version_mark=" ${C}[AsIs]${NC}" ;;
-        esac
-    fi
+    case "$ip_version" in
+        ipv4_only) ip_version_mark=" ${C}[仅IPv4]${NC}" ;;
+        ipv6_only) ip_version_mark=" ${C}[仅IPv6]${NC}" ;;
+        prefer_ipv4) ip_version_mark=" ${C}[优先IPv4]${NC}" ;;
+        prefer_ipv6) ip_version_mark=" ${C}[优先IPv6]${NC}" ;;
+        as_is|asis) ip_version_mark=" ${C}[ALL]${NC}" ;;
+    esac
     
     _ok "已添加规则: ${rule_name} → ${outbound_name}${ip_version_mark}"
     
@@ -11988,6 +12097,7 @@ _del_routing_rule() {
         local rule_type=$(echo "$rule" | jq -r '.type')
         local outbound=$(echo "$rule" | jq -r '.outbound')
         local domains=$(echo "$rule" | jq -r '.domains // ""')
+        local ip_version=$(echo "$rule" | jq -r '.ip_version // "prefer_ipv4"')
         local rule_name="${ROUTING_PRESET_NAMES[$rule_type]:-$rule_type}"
         
         # 自定义规则显示域名
@@ -12001,8 +12111,20 @@ _del_routing_rule() {
         fi
         [[ "$rule_type" == "all" ]] && rule_name="所有流量"
         local outbound_name=$(_get_outbound_display_name "$outbound")
+
+        # IP 版本标记（广告屏蔽规则无需显示）
+        local ip_mark=""
+        if [[ "$rule_type" != "ads" ]]; then
+            case "$ip_version" in
+                ipv4_only) ip_mark=" ${C}[仅IPv4]${NC}" ;;
+                ipv6_only) ip_mark=" ${C}[仅IPv6]${NC}" ;;
+                prefer_ipv4) ip_mark=" ${C}[优先IPv4]${NC}" ;;
+                prefer_ipv6) ip_mark=" ${C}[优先IPv6]${NC}" ;;
+                as_is|asis) ip_mark=" ${C}[ALL]${NC}" ;;
+            esac
+        fi
         
-        echo -e "  ${G}${idx})${NC} ${rule_name} → ${outbound_name}"
+        echo -e "  ${G}${idx})${NC} ${rule_name} → ${outbound_name}${ip_mark}"
         rule_ids+=("$rule_id")
         ((idx++))
     done < <(echo "$rules" | jq -c '.[]')
@@ -12419,9 +12541,50 @@ setup_warp_ipv6_chain() {
     case "$routing_choice" in
         1)
             # 全部流量
-            db_clear_routing_rules
-            db_add_routing_rule "all" "chain:$selected_node_name"
-            _ok "已配置: 全部流量 → WARP → 落地"
+            echo ""
+            echo -e "  ${Y}是否区分 IPv4 / IPv6 出口:${NC}"
+            _item "1" "不区分（全部流量 → WARP → 落地）"
+            _item "2" "区分 IPv4 / IPv6（分别选择出口）"
+            _item "0" "返回"
+            _line
+
+            read -rp "  请选择 [1]: " split_choice
+            split_choice=${split_choice:-1}
+
+            case "$split_choice" in
+                1)
+                    db_clear_routing_rules
+                    db_add_routing_rule "all" "chain:$selected_node_name" "" "as_is"
+                    _ok "已配置: 全部流量 → WARP → 落地"
+                    ;;
+                2)
+                    db_clear_routing_rules
+                    echo ""
+                    _info "将分别为 IPv4 / IPv6 添加 all 规则"
+                    echo -e "  ${Y}选择 IPv4 出口:${NC}"
+                    local outbound_v4=$(_select_outbound "选择 IPv4 出口" "no_check")
+                    [[ -z "$outbound_v4" ]] && return 1
+
+                    echo ""
+                    echo -e "  ${Y}选择 IPv6 出口:${NC}"
+                    local outbound_v6=$(_select_outbound "选择 IPv6 出口" "no_check")
+                    [[ -z "$outbound_v6" ]] && return 1
+
+                    db_add_routing_rule "all" "$outbound_v4" "" "ipv4_only"
+                    db_add_routing_rule "all" "$outbound_v6" "" "ipv6_only"
+
+                    local outbound_v4_name=$(_get_outbound_display_name "$outbound_v4")
+                    local outbound_v6_name=$(_get_outbound_display_name "$outbound_v6")
+                    _ok "已配置: IPv4 → ${outbound_v4_name} / IPv6 → ${outbound_v6_name}"
+                    ;;
+                0)
+                    return 0
+                    ;;
+                *)
+                    _warn "无效选项"
+                    return 1
+                    ;;
+            esac
             ;;
         2)
             # 进入分流规则配置
