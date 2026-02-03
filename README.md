@@ -29,23 +29,23 @@
 
 ## ✨ 支持协议
 
-| # | 协议 | 特点 | 推荐场景 |
-|---|------|------|----------|
-| 1 | **VLESS + Reality** | 抗封锁能力强，无需域名 | 🌟 首选推荐 |
-| 2 | **VLESS + Reality + XHTTP** | 多路复用，性能更优 | 高并发场景 |
-| 3 | **VLESS + WS + TLS** | CDN 友好，可作回落 | 被墙 IP 救活 |
-| 4 | **VMess + WS** | 回落分流/免流 | 端口复用 |
-| 5 | **VLESS-XTLS-Vision** | TLS主协议，支持回落 | ⭐ 稳定传输 |
-| 6 | **SOCKS5** | 经典代理协议 | 🔥 通用性强 |
-| 7 | **Shadowsocks 2022** | 新版加密，性能好 | SS 用户迁移 |
-| 8 | **Hysteria2** | UDP 加速，端口跳跃 | 🔥 游戏/视频 |
-| 9 | **Trojan** | TLS主协议，支持回落 | ⭐ 伪装 HTTPS |
-| 10 | **Trojan + WS** | WebSocket 传输，可做回落 | 端口复用 |
-| 11 | **Snell v4** | Surge 专用协议 (支持 ShadowTLS) | iOS/Mac 用户 |
-| 12 | **Snell v5** | Surge 5.0 新版协议 (支持 ShadowTLS) | 最新 Surge |
-| 13 | **AnyTLS** | 多协议 TLS 代理 | 抗审查能力强 |
-| 14 | **TUIC v5** | QUIC 协议，端口跳跃 | 低延迟 |
-| 15 | **NaïveProxy** | HTTP/2 代理，抗检测 | 伪装能力强 |
+| # | 协议 | 特点 | 推荐场景 | 抗检测评级 | 风险提示 |
+|---|------|------|----------|-----------|----------|
+| 1 | **VLESS + Reality** | 抗封锁能力强，无需域名 | 🌟 首选推荐 | ⭐⭐⭐⭐⭐ | ✅ 借用真实网站TLS身份，流量与目标网站一致，无需维护 |
+| 2 | **VLESS + Reality + XHTTP** | 多路复用，性能更优 | 高并发场景 | ⭐⭐⭐⭐⭐ | ✅ HTTP/2多路复用，避免TLS-in-TLS特征 |
+| 3 | **VLESS + WS + TLS** | CDN 友好，可作回落 | 被墙 IP 救活 | ⭐⭐⭐⭐ | ⚠️ 需真实证书，避免TLS指纹；建议配合CDN |
+| 4 | **VMess + WS** | 回落分流/免流 | 端口复用 | ⭐⭐ | ⚠️ 已知漏洞：填充字段可被识别（[CVE](https://github.com/v2fly/v2ray-core/issues/2054)），必须配合CDN |
+| 5 | **VLESS-XTLS-Vision** | TLS主协议，支持回落 | 稳定传输 | ⭐⭐⭐⭐ | ✅ Vision专门解决TLS-in-TLS检测问题 |
+| 6 | **SOCKS5** | 经典代理协议 | 通用性强 | ⭐ | ❌ 明文传输，仅适合内网或本地环境 |
+| 7 | **Shadowsocks 2022** | 新版加密，性能好 | SS 用户迁移 | ⭐⭐ | ⚠️ GFW主动探测+被动检测（[研究](https://gfw.report/blog/gfw_shadowsocks/)），UDP易暴露，建议TCP+多路复用 |
+| 8 | **Hysteria2** | UDP 加速，端口跳跃 | 游戏/视频 | ⭐⭐ | ⚠️ GFW已可解密QUIC初始包，端口跳跃仅能缓解 |
+| 9 | **Trojan** | TLS主协议，支持回落 | 伪装 HTTPS | ⭐⭐⭐ | ⚠️ 有TLS指纹风险，需真实证书+回落配置 |
+| 10 | **Trojan + WS** | WebSocket 传输，可做回落 | 端口复用 | ⭐⭐⭐ | ⚠️ 配合CDN可提升隐蔽性 |
+| 11 | **Snell v4** | Surge 专用协议 (支持 ShadowTLS) | iOS/Mac 用户 | ⭐⭐⭐ | ⚠️ 闭源协议，建议启用ShadowTLS增强 |
+| 12 | **Snell v5** | Surge 5.0 新版协议 (支持 ShadowTLS) | 最新 Surge | ⭐⭐⭐ | ⚠️ 闭源协议，建议启用ShadowTLS增强 |
+| 13 | **AnyTLS** | 多协议 TLS 代理 | 抗审查能力强 | ⭐⭐⭐⭐ | ✅ 多协议混合，增加识别难度 |
+| 14 | **TUIC v5** | QUIC 协议，端口跳跃 | 低延迟 | ⭐⭐ | ⚠️ QUIC易被检测，端口跳跃可缓解 |
+| 15 | **NaïveProxy** | HTTP/2 代理，抗检测 | 伪装能力强 | ⭐⭐⭐ | ⚠️ 需与Chrome版本同步，伊朗已被检测（[Issue](https://github.com/klzgrad/naiveproxy/issues/404)），维护成本高 |
 
 > 💡 **ShadowTLS 插件**：Snell v4、Snell v5、SS2022 安装时可选择启用 ShadowTLS (v3) 插件，实现 TLS 流量伪装。
 
@@ -71,25 +71,30 @@
 
 ### 🎯 协议选择指南
 
-**抗封锁首选：**
-- **VLESS + Reality** - 无需域名，流量特征像正常 TLS，抗封锁能力最强
-- **AnyTLS** - 多协议 TLS 代理，抗审查能力强
-- **NaïveProxy** - HTTP/2 代理，流量特征与 Chrome 一致，抗检测能力强
+**高强度审查环境（首选）：**
+- **VLESS + Reality** - 借用真实网站 TLS 身份，流量特征与目标网站一致，无需维护
+- **VLESS + XHTTP + Reality** - 避免 TLS-in-TLS 特征，HTTP/2 多路复用
+- **VLESS + WS + TLS + CDN** - 通过 Cloudflare 等 CDN 隐藏真实 IP
 
 **被墙 IP 救活：**
-- **VLESS + WS + TLS** - 可套 CDN（如 Cloudflare），IP 被墙也能用
-- **VMess + WS** - 同样支持 CDN，兼容性好
-- **NaïveProxy** - 支持 CDN，HTTP/2 多路复用
+- **VLESS + WS + TLS + CDN** - 通过 Cloudflare 等 CDN 隐藏真实 IP
+- **VMess + WS + CDN** - 必须配合 CDN 使用，不建议裸连
 
-**高性能传输：**
-- **VLESS + XHTTP** - HTTP/2 多路复用，高并发场景性能优异
-- **VLESS + XHTTP + CDN** - 支持 CDN 代理，IP被墙也能用
-- **Hysteria2** - QUIC 协议，UDP 加速，游戏/视频体验好
-- **TUIC v5** - QUIC 协议，低延迟
+**游戏/低延迟场景：**
+- **Hysteria2 / TUIC** - UDP 加速，但需注意 QUIC 协议已可被 GFW 检测
+- 建议启用端口跳跃并配合其他协议作为备用
 
-**端口复用：**
+**端口复用场景：**
 - **VLESS-Vision / Trojan** - 作为 TLS 主协议监听 443
-- **VLESS-WS / VMess-WS / Trojan-WS** - 作为回落子协议，共享 443 端口
+- **VLESS-WS / VMess-WS / Trojan-WS** - 作为回落子协议共享端口
+
+> ⚠️ **重要提示**：
+> - UDP/QUIC 协议（Hysteria2、TUIC）虽然性能好，但更容易被检测和封锁
+> - Shadowsocks 建议仅在 TCP + 多路复用模式下使用，避免 UDP 直连
+> - NaïveProxy 需要频繁更新以匹配 Chrome 版本，否则指纹不匹配反而更易暴露
+> - 所有 TLS 协议都应使用真实域名证书，避免自签名证书
+> - **Reality 是目前最稳定的选择**：无需跟随浏览器更新，维护成本低
+> - 建议准备多种协议组合，不要依赖单一方案
 
 ---
 
