@@ -1,6 +1,6 @@
 #!/bin/bash 
 #═══════════════════════════════════════════════════════════════════════════════
-#  多协议代理一键部署脚本 v3.4.8 [服务端]
+#  多协议代理一键部署脚本 v3.4.9 [服务端]
 #  
 #  架构升级:
 #    • Xray 核心: 处理 TCP/TLS 协议 (VLESS/VMess/Trojan/SOCKS/SS2022)
@@ -17,7 +17,7 @@
 #  项目地址: https://github.com/Chil30/vless-all-in-one
 #═══════════════════════════════════════════════════════════════════════════════
 
-readonly VERSION="3.4.8"
+readonly VERSION="3.4.9"
 readonly AUTHOR="Chil30"
 readonly REPO_URL="https://github.com/Chil30/vless-all-in-one"
 readonly SCRIPT_REPO="Chil30/vless-all-in-one"
@@ -445,7 +445,7 @@ get_protocol_name() {
     case "$proto" in
         vless) echo "VLESS-REALITY" ;;
         vless-vision) echo "VLESS-Vision" ;;
-        vless-ws) echo "VLESS-WS" ;;
+        vless-ws) echo "VLESS-WS-TLS" ;;
         vless-ws-notls) echo "VLESS-WS-CF" ;;
         vless-xhttp) echo "VLESS-XHTTP" ;;
         vless-xhttp-cdn) echo "VLESS-XHTTP-CDN" ;;
@@ -3738,7 +3738,7 @@ check_dependencies() {
     local need_install=false
     
     # 必需的基础命令
-    local required_cmds="curl jq openssl"
+    local required_cmds="curl jq openssl qrencode"
     
     for cmd in $required_cmds; do
         if ! command -v "$cmd" &>/dev/null; then
@@ -3758,14 +3758,14 @@ check_dependencies() {
         case "$DISTRO" in
             alpine)
                 apk update >/dev/null 2>&1
-                apk add --no-cache curl jq openssl coreutils ca-certificates gawk >/dev/null 2>&1
+                apk add --no-cache curl jq openssl coreutils ca-certificates gawk libqrencode-tools >/dev/null 2>&1
                 ;;
             centos)
-                yum install -y curl jq openssl ca-certificates >/dev/null 2>&1
+                yum install -y curl jq openssl ca-certificates qrencode >/dev/null 2>&1
                 ;;
             debian|ubuntu)
                 apt-get update >/dev/null 2>&1
-                DEBIAN_FRONTEND=noninteractive apt-get install -y curl jq openssl ca-certificates >/dev/null 2>&1
+                DEBIAN_FRONTEND=noninteractive apt-get install -y curl jq openssl ca-certificates qrencode >/dev/null 2>&1
                 ;;
         esac
         
@@ -4964,7 +4964,25 @@ EOF
     printf 'vmess://%s\n' "$(echo -n "$json" | base64 -w 0 2>/dev/null || echo -n "$json" | base64 | tr -d '\n')"
 }
 
-gen_qr() { printf '%s\n' "https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=$(urlencode "$1")"; }
+# 生成二维码 (使用 qrencode 生成终端二维码)
+gen_qr() {
+    local text="$1"
+    local margin="${2:-2}" 
+    
+    # 使用 qrencode 生成终端二维码 (标准黑白二维码)
+    if command -v qrencode &>/dev/null; then
+        echo "$text" | qrencode -t UTF8 -m "$margin" 2>/dev/null && return 0
+    fi
+    
+    # 未安装 qrencode，提示用户安装
+    echo "[需安装 qrencode 才能显示二维码]"
+    return 1
+}
+
+# 检查是否能生成终端二维码
+_can_gen_qr() {
+    command -v qrencode &>/dev/null
+}
 
 
 
@@ -5677,8 +5695,40 @@ get_acme_cert() {
         _err "  3. 域名是否已被其他证书占用"
         _err "  4. 是否有其他程序占用80端口"
         echo ""
-        _warn "回退到自签名证书模式..."
-        return 1
+        
+        # 给用户选择而不是自动回退
+        echo -e "  ${W}请选择操作：${NC}"
+        echo -e "  ${G}1${NC}) 重试证书申请"
+        echo -e "  ${G}2${NC}) 使用 DNS 验证模式 (需要 DNS API)"
+        echo -e "  ${G}3${NC}) 使用自签名证书 (不推荐)"
+        echo -e "  ${G}0${NC}) 取消安装"
+        echo ""
+        read -rp "  请选择 [0]: " cert_choice
+        cert_choice="${cert_choice:-0}"
+        
+        case "$cert_choice" in
+            1)
+                # 重试
+                get_acme_cert "$domain" "$protocol"
+                return $?
+                ;;
+            2)
+                # DNS 验证模式
+                _info "切换到 DNS 验证模式..."
+                get_acme_cert_dns "$domain" "$protocol"
+                return $?
+                ;;
+            3)
+                # 自签名证书
+                _warn "使用自签名证书模式..."
+                return 1
+                ;;
+            *)
+                # 取消
+                _warn "已取消安装"
+                return 2
+                ;;
+        esac
     fi
 }
 
@@ -16072,6 +16122,21 @@ show_single_protocol_info() {
             echo ""
             echo -e "  ${Y}Loon 配置:${NC}"
             echo -e "  ${C}${country_code}-Vless-WS = VLESS, ${config_ip}, ${display_port}, \"${uuid}\", transport=ws, path=${path}, host=${sni}, udp=true, over-tls=true, sni=${sni}, skip-cert-verify=true${NC}"
+            echo ""
+            echo -e "  ${Y}Clash Meta 配置:${NC}"
+            echo -e "  ${C}- name: ${country_code}-VLESS-WS-TLS${NC}"
+            echo -e "  ${C}  type: vless${NC}"
+            echo -e "  ${C}  server: ${config_ip}${NC}"
+            echo -e "  ${C}  port: ${display_port}${NC}"
+            echo -e "  ${C}  uuid: ${uuid}${NC}"
+            echo -e "  ${C}  network: ws${NC}"
+            echo -e "  ${C}  tls: true${NC}"
+            echo -e "  ${C}  skip-cert-verify: true${NC}"
+            echo -e "  ${C}  servername: ${sni}${NC}"
+            echo -e "  ${C}  ws-opts:${NC}"
+            echo -e "  ${C}    path: ${path}${NC}"
+            echo -e "  ${C}    headers:${NC}"
+            echo -e "  ${C}      Host: ${sni}${NC}"
             ;;
         vless-ws-notls)
             local host=$(echo "$cfg" | jq -r '.host // empty')
@@ -16092,6 +16157,22 @@ show_single_protocol_info() {
             echo ""
             echo -e "  ${Y}Loon 配置:${NC}"
             echo -e "  ${C}${country_code}-VMess-WS = VMess, ${config_ip}, ${display_port}, aes-128-gcm, \"${uuid}\", transport=ws, path=${path}, host=${sni}, udp=true, over-tls=true, sni=${sni}, skip-cert-verify=true${NC}"
+            echo ""
+            echo -e "  ${Y}Clash 配置:${NC}"
+            echo -e "  ${C}- name: ${country_code}-VMess-WS${NC}"
+            echo -e "  ${C}  type: vmess${NC}"
+            echo -e "  ${C}  server: ${config_ip}${NC}"
+            echo -e "  ${C}  port: ${display_port}${NC}"
+            echo -e "  ${C}  uuid: ${uuid}${NC}"
+            echo -e "  ${C}  alterId: 0${NC}"
+            echo -e "  ${C}  cipher: auto${NC}"
+            echo -e "  ${C}  tls: true${NC}"
+            echo -e "  ${C}  skip-cert-verify: true${NC}"
+            echo -e "  ${C}  network: ws${NC}"
+            echo -e "  ${C}  ws-opts:${NC}"
+            echo -e "  ${C}    path: ${path}${NC}"
+            echo -e "  ${C}    headers:${NC}"
+            echo -e "  ${C}      Host: ${sni}${NC}"
             ;;
         ss2022)
             echo -e "  密码: ${G}$password${NC}"
@@ -16126,6 +16207,15 @@ show_single_protocol_info() {
             echo ""
             echo -e "  ${Y}Loon 配置:${NC}"
             echo -e "  ${C}${country_code}-Hysteria2 = Hysteria2, ${config_ip}, ${display_port}, \"${password}\", udp=true, sni=${sni}, skip-cert-verify=true${NC}"
+            echo ""
+            echo -e "  ${Y}Clash Meta 配置:${NC}"
+            echo -e "  ${C}- name: ${country_code}-Hysteria2${NC}"
+            echo -e "  ${C}  type: hysteria2${NC}"
+            echo -e "  ${C}  server: ${config_ip}${NC}"
+            echo -e "  ${C}  port: ${display_port}${NC}"
+            echo -e "  ${C}  password: ${password}${NC}"
+            echo -e "  ${C}  sni: ${sni}${NC}"
+            echo -e "  ${C}  skip-cert-verify: true${NC}"
             ;;
         trojan)
             echo -e "  密码: ${G}$password${NC}"
@@ -16136,6 +16226,15 @@ show_single_protocol_info() {
             echo ""
             echo -e "  ${Y}Loon 配置:${NC}"
             echo -e "  ${C}${country_code}-Trojan = trojan, ${config_ip}, ${display_port}, \"${password}\", udp=true, over-tls=true, sni=${sni}${NC}"
+            echo ""
+            echo -e "  ${Y}Clash 配置:${NC}"
+            echo -e "  ${C}- name: ${country_code}-Trojan${NC}"
+            echo -e "  ${C}  type: trojan${NC}"
+            echo -e "  ${C}  server: ${config_ip}${NC}"
+            echo -e "  ${C}  port: ${display_port}${NC}"
+            echo -e "  ${C}  password: ${password}${NC}"
+            echo -e "  ${C}  sni: ${sni}${NC}"
+            echo -e "  ${C}  skip-cert-verify: true${NC}"
             ;;
         trojan-ws)
             echo -e "  密码: ${G}$password${NC}"
@@ -21465,7 +21564,14 @@ add_protocol_to_tunnel() {
         return 0
     fi
     
-    if [[ ! "$proto_choice" =~ ^[0-9]+$ ]] || [[ $proto_choice -gt ${#proto_array[@]} ]]; then
+    # Alpine 兼容性：使用 case 替代正则
+    case "$proto_choice" in
+        ''|*[!0-9]*)
+            _err "无效选择"
+            return 1
+            ;;
+    esac
+    if [[ $proto_choice -gt ${#proto_array[@]} ]]; then
         _err "无效选择"
         return 1
     fi
@@ -21491,9 +21597,10 @@ add_protocol_to_tunnel() {
     read -rp "  是否修改监听为 127.0.0.1? [Y/n]: " modify_listen
     
     local listen_addr="127.0.0.1"
-    if [[ "$modify_listen" =~ ^[nN]$ ]]; then
-        listen_addr="0.0.0.0"
-    fi
+    # Alpine 兼容性：使用 case 替代正则
+    case "$modify_listen" in
+        [nN]) listen_addr="0.0.0.0" ;;
+    esac
     
     _info "生成隧道配置..."
     
@@ -21587,9 +21694,12 @@ EOF
     
     echo ""
     read -rp "  是否立即启动隧道? [Y/n]: " start_now
-    if [[ ! "$start_now" =~ ^[nN]$ ]]; then
-        _start_tunnel_service
-        
+    # Alpine 兼容性：使用 case 替代正则
+    case "$start_now" in
+        [nN]) ;; # 不启动
+        *)
+            _start_tunnel_service
+            
         # 显示分享链接
         echo ""
         _line
@@ -21659,7 +21769,8 @@ EOF
         
         echo ""
         echo -e "  ${D}客户端配置: 地址=${hostname}, 端口=443, TLS=开启${NC}"
-    fi
+            ;;
+    esac
     
     _pause
 }

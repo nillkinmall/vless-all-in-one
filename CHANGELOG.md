@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.9] - 2026-02-08
+
+### Added
+- 新增 Clash/Clash Meta 配置输出
+  - VLESS-WS、VMess-WS、Hysteria2、Trojan 协议支持 Clash YAML 格式
+- 新增 qrencode 自动安装，移除在线二维码 API 回退功能
+
+### Fixed
+- 修复证书申请失败时自动回退到自签名证书的问题
+- 修复 VLESS-WS 协议显示名称
+
 ## [3.4.8] - 2026-02-06
 
 ### Added
