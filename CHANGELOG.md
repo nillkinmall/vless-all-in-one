@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Fixed**
 
 - 修复 VLESS-XHTTP TLS+CDN 模式安装时闪退的问题
+- 修复 crontab 命令缺失导致流量统计和过期检查失败的问题
 
 ## [3.4.9] - 2026-02-08
 

@@ -4051,6 +4051,12 @@ check_dependencies() {
         fi
     done
 
+    # 检查 crontab (流量统计和过期检查需要)
+    if ! command -v crontab &>/dev/null; then
+        missing_deps+=("cron")
+        need_install=true
+    fi
+
     if ! _has_ca_bundle; then
         missing_deps+=("ca-certificates")
         need_install=true
@@ -4062,14 +4068,25 @@ check_dependencies() {
         case "$DISTRO" in
             alpine)
                 apk update >/dev/null 2>&1
-                apk add --no-cache curl jq openssl coreutils ca-certificates gawk libqrencode-tools >/dev/null 2>&1
+                apk add --no-cache curl jq openssl coreutils ca-certificates gawk libqrencode-tools cronie >/dev/null 2>&1
+                # 启动 crond 服务
+                rc-service crond start >/dev/null 2>&1
+                rc-update add crond default >/dev/null 2>&1
                 ;;
             centos)
-                yum install -y curl jq openssl ca-certificates qrencode >/dev/null 2>&1
+                yum install -y curl jq openssl ca-certificates qrencode cronie >/dev/null 2>&1
+                # 启动 crond 服务
+                systemctl enable crond >/dev/null 2>&1
+                systemctl start crond >/dev/null 2>&1
                 ;;
             debian|ubuntu)
                 apt-get update >/dev/null 2>&1
-                DEBIAN_FRONTEND=noninteractive apt-get install -y curl jq openssl ca-certificates qrencode >/dev/null 2>&1
+                DEBIAN_FRONTEND=noninteractive apt-get install -y curl jq openssl ca-certificates qrencode cron >/dev/null 2>&1
+                # Debian/Ubuntu 的 cron 通常自动启动,但确保服务运行
+                if command -v systemctl >/dev/null 2>&1; then
+                    systemctl enable cron >/dev/null 2>&1
+                    systemctl start cron >/dev/null 2>&1
+                fi
                 ;;
         esac
         
@@ -4081,6 +4098,11 @@ check_dependencies() {
                 return 1
             fi
         done
+        if ! command -v crontab &>/dev/null; then
+            _err "依赖安装失败: crontab"
+            _warn "请手动安装 cron 服务"
+            return 1
+        fi
         if ! _has_ca_bundle; then
             _err "依赖安装失败: ca-certificates"
             _warn "请手动安装: ca-certificates"
