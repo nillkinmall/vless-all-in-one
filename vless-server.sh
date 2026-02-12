@@ -1,6 +1,6 @@
 #!/bin/bash 
 #═══════════════════════════════════════════════════════════════════════════════
-#  多协议代理一键部署脚本 v3.4.9 [服务端]
+#  多协议代理一键部署脚本 v3.4.10 [服务端]
 #  
 #  架构升级:
 #    • Xray 核心: 处理 TCP/TLS 协议 (VLESS/VMess/Trojan/SOCKS/SS2022)
@@ -17,7 +17,7 @@
 #  项目地址: https://github.com/Chil30/vless-all-in-one
 #═══════════════════════════════════════════════════════════════════════════════
 
-readonly VERSION="3.4.9"
+readonly VERSION="3.4.10"
 readonly AUTHOR="Chil30"
 readonly REPO_URL="https://github.com/Chil30/vless-all-in-one"
 readonly SCRIPT_REPO="Chil30/vless-all-in-one"
@@ -5251,6 +5251,12 @@ gen_vless_xhttp_link() {
     printf '%s\n' "vless://${uuid}@${ip}:${port}?encryption=none&security=reality&type=xhttp&sni=${sni}&fp=chrome&pbk=${pbk}&sid=${sid}&path=$(urlencode "$path")&mode=auto#${name}"
 }
 
+gen_vless_xhttp_cdn_link() {
+    local domain="$1" port="$2" uuid="$3" path="${4:-/}" country="${5:-}"
+    local name="${country:+${country}-}XHTTP-CDN"
+    printf '%s\n' "vless://${uuid}@${domain}:${port}?encryption=none&security=tls&type=xhttp&sni=${domain}&host=${domain}&path=$(urlencode "$path")&mode=auto#${name}"
+}
+
 gen_vmess_ws_link() {
     local ip="$1" port="$2" uuid="$3" sni="$4" path="$5" country="${6:-}"
     local clean_ip="${ip#[}"
@@ -6211,40 +6217,86 @@ setup_cert_and_nginx() {
     fi
     
     # 没有证书或用户选择申请新证书，询问用户
-    echo ""
-    _line
-    echo -e "  ${W}证书配置模式${NC}"
-    echo -e "  ${G}1)${NC} 使用真实域名 (推荐 - 自动申请 Let's Encrypt 证书)"
-    echo -e "  ${G}2)${NC} 无域名 (使用自签证书 - 安全性较低，易被识别)"
-    echo ""
-    read -rp "  请选择 [1-2，默认 2]: " cert_choice
+    # TLS+CDN 模式必须使用真实证书，不提供自签选项
+    local is_cdn_mode=false
+    if [[ "$protocol" == "vless-xhttp-cdn" ]]; then
+        is_cdn_mode=true
+    fi
     
-    if [[ "$cert_choice" == "1" ]]; then
-        echo -e "  ${Y}提示: 域名必须已解析到本机 IP${NC}"
+    if [[ "$is_cdn_mode" == "true" ]]; then
+        # TLS+CDN 模式：强制使用真实域名
+        echo ""
+        _line
+        echo -e "  ${W}TLS+CDN 模式 - 证书配置${NC}"
+        _line
+        echo -e "  ${Y}此模式必须使用真实域名和证书${NC}"
+        echo -e "  ${D}提示: 域名必须已解析到本机 IP${NC}"
+        _line
+        echo ""
         read -rp "  请输入你的域名: " input_domain
         
-        if [[ -n "$input_domain" ]]; then
-            CERT_DOMAIN="$input_domain"
+        if [[ -z "$input_domain" ]]; then
+            _err "域名不能为空"
+            return 1
+        fi
+        
+        CERT_DOMAIN="$input_domain"
+        
+        # 确保配置目录存在
+        mkdir -p "$CFG" 2>/dev/null
+        
+        # 保存端口到临时文件，供 create_fake_website 使用
+        echo "$NGINX_PORT" > "$CFG/.nginx_port_tmp" 2>/dev/null
+        
+        # 申请证书（内部会调用 create_fake_website，会自动保存 sub.info）
+        if get_acme_cert "$CERT_DOMAIN" "$protocol"; then
+            echo "$CERT_DOMAIN" > "$CFG/cert_domain"
+            # 确保订阅文件存在
+            generate_sub_files
+            rm -f "$CFG/.nginx_port_tmp"
+            return 0
+        else
+            _err "证书申请失败"
+            rm -f "$CFG/.nginx_port_tmp"
+            return 1
+        fi
+    else
+        # 其他模式：提供真实证书和自签证书两个选项
+        echo ""
+        _line
+        echo -e "  ${W}证书配置模式${NC}"
+        echo -e "  ${G}1)${NC} 使用真实域名 (推荐 - 自动申请 Let's Encrypt 证书)"
+        echo -e "  ${G}2)${NC} 无域名 (使用自签证书 - 安全性较低，易被识别)"
+        echo ""
+        read -rp "  请选择 [1-2，默认 2]: " cert_choice
+        
+        if [[ "$cert_choice" == "1" ]]; then
+            echo -e "  ${Y}提示: 域名必须已解析到本机 IP${NC}"
+            read -rp "  请输入你的域名: " input_domain
             
-            # 确保配置目录存在
-            mkdir -p "$CFG" 2>/dev/null
-            
-            # 保存端口到临时文件，供 create_fake_website 使用
-            echo "$NGINX_PORT" > "$CFG/.nginx_port_tmp" 2>/dev/null
-            
-            # 申请证书（内部会调用 create_fake_website，会自动保存 sub.info）
-            if get_acme_cert "$CERT_DOMAIN" "$protocol"; then
-                echo "$CERT_DOMAIN" > "$CFG/cert_domain"
-                # 确保订阅文件存在
-                generate_sub_files
-                rm -f "$CFG/.nginx_port_tmp"
-                return 0
-            else
-                _warn "证书申请失败，使用自签证书"
-                gen_self_cert "$CERT_DOMAIN"
-                echo "$CERT_DOMAIN" > "$CFG/cert_domain"
-                rm -f "$CFG/.nginx_port_tmp"
-                return 1
+            if [[ -n "$input_domain" ]]; then
+                CERT_DOMAIN="$input_domain"
+                
+                # 确保配置目录存在
+                mkdir -p "$CFG" 2>/dev/null
+                
+                # 保存端口到临时文件，供 create_fake_website 使用
+                echo "$NGINX_PORT" > "$CFG/.nginx_port_tmp" 2>/dev/null
+                
+                # 申请证书（内部会调用 create_fake_website，会自动保存 sub.info）
+                if get_acme_cert "$CERT_DOMAIN" "$protocol"; then
+                    echo "$CERT_DOMAIN" > "$CFG/cert_domain"
+                    # 确保订阅文件存在
+                    generate_sub_files
+                    rm -f "$CFG/.nginx_port_tmp"
+                    return 0
+                else
+                    _warn "证书申请失败，使用自签证书"
+                    gen_self_cert "$CERT_DOMAIN"
+                    echo "$CERT_DOMAIN" > "$CFG/cert_domain"
+                    rm -f "$CFG/.nginx_port_tmp"
+                    return 1
+                fi
             fi
         fi
     fi
@@ -16423,6 +16475,19 @@ show_single_protocol_info() {
             echo ""
             echo -e "  ${D}注: Loon/Surge 暂不支持 XHTTP 传输，请使用分享链接导入 Shadowrocket${NC}"
             ;;
+        vless-xhttp-cdn)
+            local domain=$(echo "$cfg" | jq -r '.domain // empty')
+            echo -e "  域名: ${G}$domain${NC}"
+            echo -e "  UUID: ${G}$uuid${NC}"
+            echo -e "  Path: ${G}$path${NC}"
+            echo -e "  外部端口: ${G}443${NC} (Nginx TLS)"
+            echo -e "  内部端口: ${G}$port${NC} (Xray h2c)"
+            echo ""
+            echo -e "  ${Y}客户端配置:${NC}"
+            echo -e "  ${C}地址=${domain}, 端口=443, TLS=开启${NC}"
+            echo ""
+            echo -e "  ${D}注: Loon/Surge 暂不支持 XHTTP 传输，请使用分享链接导入 Shadowrocket${NC}"
+            ;;
         vless-vision)
             echo -e "  UUID: ${G}$uuid${NC}"
             echo -e "  SNI: ${G}$sni${NC}"
@@ -16687,6 +16752,12 @@ show_single_protocol_info() {
             vless-xhttp)
                 link=$(gen_vless_xhttp_link "$ip_addr" "$link_port" "$uuid" "$public_key" "$short_id" "$sni" "$path" "$country_code")
                 join_code=$(echo "REALITY-XHTTP|${ip_addr}|${link_port}|${uuid}|${public_key}|${short_id}|${sni}|${path}" | base64 -w 0)
+                ;;
+            vless-xhttp-cdn)
+                local domain=$(echo "$cfg" | jq -r '.domain // empty')
+                # TLS+CDN 模式使用域名和 443 端口
+                link=$(gen_vless_xhttp_cdn_link "$domain" "443" "$uuid" "$path" "$country_code")
+                join_code=$(echo "VLESS-XHTTP-CDN|${domain}|443|${uuid}|${path}" | base64 -w 0)
                 ;;
             vless-vision)
                 link=$(gen_vless_vision_link "$ip_addr" "$link_port" "$uuid" "$sni" "$country_code")
@@ -18039,35 +18110,36 @@ do_install_server() {
                 echo -e "  ${D}此模式需要真实域名和证书${NC}"
                 echo -e "  ${D}Xray 监听本地，Nginx 反代并处理 TLS${NC}"
                 echo -e "  ${D}客户端通过 Cloudflare CDN (小云朵) 访问${NC}"
+                _line
                 echo ""
                 
-                # 获取域名和证书
+                # 使用统一的证书和 Nginx 配置函数
+                # TLS+CDN 模式必须有真实证书
+                local cert_retry=true
                 local domain=""
-                while [[ -z "$domain" ]]; do
-                    read -rp "  请输入域名 (必须已在 Cloudflare 托管): " domain
-                    [[ -z "$domain" ]] && _err "域名不能为空"
-                done
-                
-                # 检查证书
-                local cert_dir="$CFG/certs"
-                local cert_file="$cert_dir/server.crt"
-                local key_file="$cert_dir/server.key"
-                
-                if [[ -f "$cert_file" && -f "$key_file" ]]; then
-                    local existing_domain=$(cat "$CFG/cert_domain" 2>/dev/null)
-                    if [[ "$existing_domain" == "$domain" ]]; then
-                        _ok "使用现有证书: $domain"
+                while [[ "$cert_retry" == "true" ]]; do
+                    setup_cert_and_nginx "vless-xhttp-cdn"
+                    local setup_result=$?
+                    domain="$CERT_DOMAIN"
+                    
+                    if [[ "$setup_result" -eq 0 && -n "$domain" ]]; then
+                        # 证书配置成功
+                        cert_retry=false
                     else
-                        _warn "现有证书域名 ($existing_domain) 与输入域名 ($domain) 不匹配"
-                        read -rp "  是否重新申请证书? [Y/n]: " reapply
-                        if [[ ! "$reapply" =~ ^[nN]$ ]]; then
-                            _apply_cert "$domain" || { _err "证书申请失败"; return 1; }
+                        # 配置失败，询问是否重试
+                        _err "证书配置失败"
+                        echo ""
+                        echo -e "  ${G}1)${NC} 重试"
+                        echo -e "  ${G}2)${NC} 取消安装"
+                        echo ""
+                        read -rp "  请选择 [1]: " retry_choice
+                        if [[ "$retry_choice" == "2" ]]; then
+                            return 0
                         fi
+                        # 清除失败的配置，准备重试
+                        rm -f "$CFG/certs/server.crt" "$CFG/certs/server.key" "$CFG/cert_domain"
                     fi
-                else
-                    _info "申请证书..."
-                    _apply_cert "$domain" || { _err "证书申请失败"; return 1; }
-                fi
+                done
                 
                 # 选择内部监听端口
                 local internal_port=18080
@@ -20685,6 +20757,7 @@ gen_surge_sub() {
                     [[ -n "$server_ip" ]] && proxy="$name = anytls, $server_ip, $port, password=$password, sni=$sni, skip-cert-verify=true"
                     ;;
                 snell|snell-v5|snell-shadowtls|snell-v5-shadowtls)
+                    # Snell 和 Snell+ShadowTLS 都使用相同的 Surge 配置格式
                     [[ -n "$server_ip" ]] && proxy="$name = snell, $server_ip, $port, psk=$psk, version=${version:-4}"
                     ;;
             esac
