@@ -29,6 +29,8 @@
 
 > <img src="https://www.skylineconnect.io/images/favicon.svg" height="50"> [SkylineConnect](https://www.skylineconnect.io/signup?aff=01CC63AP) -  软银/Lumen / 大陆优化 / 大流量服务器 / 虚拟机10Gbps网口
 
+> <img src="https://www.geelinx.com/favicon.ico" height="50"> [Geelinx](https://www.geelinx.com/aff/HLGCSMDN) -  解锁流媒体 / 大陆优化 / 单向带宽计费
+
 >🌐 **指纹浏览器推荐** - 配合代理使用效果更佳：
 
 > <img src="https://roxybrowser.com/favicon.ico" height="50"> [RoxyBrowser](https://roxybrowser.com?code=0128SUFA) - 多账号独立环境/ 多端同步 / 防关联检测 / 团队协作 / 浏览器指纹隔离 / 代理绑定 / AI多账号管理
@@ -577,6 +579,7 @@ apk add curl jq unzip iproute2 nginx
 | **lain.sh** | 原生IP / 解锁流媒体 / 家宽 ISP | [购买](https://dash.lain.sh?ref=Charonlio) |
 | **CstoneCloud** | 住宅双ISP / 解锁流媒体 / 直连&五网回程9929 | [购买](https://www.cstonecloud.com/aff.php?aff=358) |
 | **SkylineConnect** | 软银/Lumen / 大陆优化 / 大流量服务器 | [购买](https://www.skylineconnect.io/signup?aff=01CC63AP) |
+| **Geelinx** | 解锁流媒体 / 大陆优化 / 单向带宽计费 | [购买](https://www.geelinx.com/aff/HLGCSMDN) |
 
 ### 🎁 RoxyBrowser 指纹浏览器 - 专属链接注册享 10% 优惠，👆 点击图片注册
 
